@@ -2,7 +2,6 @@
 # https://deeplizard.com/learn/video/PyQNfsGUnQA
 # Their code is itself a modification of pytorch's tutorial code for deep Q networks.
 
-%matplotlib inline
 import math
 import random
 import numpy as np
@@ -18,6 +17,11 @@ import torch.nn.functional as F
 import torchvision.transforms as T
 is_ipython = 'inline' in matplotlib.get_backend()
 if is_ipython: from IPython import display
+
+import threading
+from subprocess import PIPE, Popen, run
+import time
+import subprocess
 
 class DQN(nn.Module):
     def __init__(self, img_height, img_width):
@@ -69,22 +73,88 @@ class EpsilonGreedyStrategy():
                 math.exp(-1. * current_step * self.decay)
 
 class Agent():
-    def __init__(self, strategy, num_actions, device):
+    def __init__(self, strategy, device):
         self.current_step = 0
         self.strategy = strategy
-        self.num_actions = num_actions
         self.device = device
 
     def select_actions(self, state, policy_net):
         rate = self.strategy.get_exploration_rate(self.current_step)
         self.current_step += 1
-        
+
         if rate > random.random():
-            action = random.randrange(self.num_actions)
-            return torch.tensor([action]).to(self.device) # explore      
+            randActions = []
+            for i in range(8):
+                randActions.append(random.random() > 0.5)
+            return randActions # explore
         else:
             with torch.no_grad():
-                return policy_net(state).argmax(dim=1).to(self.device) # exploit
+                rawOuts = policy_net(state).numpy()
+                outs = []
+                for elem in rawOuts:
+                    outs.append(elem > 0.5)
+                return outs # exploit
+
+# This section is naturally almost entirely written by me. 
+class DustforceEnv():
+    def __init__(self):
+        cmd = "/home/caleb/DF/dustmod.linux.steam.nofocus.bin.x86_64"
+        proc = Popen(["unbuffer", cmd], stdout=PIPE, stderr=PIPE, universal_newlines=True)
+        threading.Thread(target=lambda:self.process_input(proc)).start()
+        out = subprocess.run(["unbuffer", "xdotool", "search", "dustforce"], capture_output=True)
+        print("Window ID is " + out.stdout.decode())
+        self.winID = out.stdout.decode()
+        self.lastActions = []
+        for i in range(8):
+            self.lastActions.append(False)
+        self.inputList = ["w","a","s","d","u","i","o","p"]
+
+    def process_input(self, proc):
+        while (line := proc.stdout.readline()) != b"":
+            print(line, end="")
+        
+    def sendInput(self, cmd, key, delay=17):
+        print("sendInput " + cmd + " " + key)
+        subprocess.run(["xdotool",
+                        cmd,
+                        "--window", self.winID,
+                        "--delay", str(delay),
+                        key])
+
+    def sendKeypress(self, key, delay=17):
+        print("sendKeypress " + key)
+        subprocess.run(["xdotool",
+                        "keydown",
+                        "--window", self.winID,
+                        "--delay", str(delay),
+                        key,
+                        "keyup",
+                        "--window", self.winID,
+                        "--delay", str(delay),
+                        "key"])
+
+    def reset(self):
+        for i in range(8):
+            self.sendKeypress("r")
+        # sent so many times because this is the one place dropping the input is intolerable
+        # and also it doesn't really matter if it's sent too many times; the game interprets it fine
+        
+    def close(self):
+        self.sendInput("Escape")
+        self.sendInput("w")
+        self.sendInput("Return")
+        self.sendInput("a")
+        self.sendInput("u")
+
+    def step(self, actions):
+        for (action, lastAction, key) in zip(actions, lastActions, inputList):
+            if action and not lastAction:
+                sendInput("keydown", key)
+            if lastAction and not action:
+                sendInput("keyup", key)
+        # reward, etc.
+        return (0, 0, False, 0)
+    
 
 class EnvManager():
     def __init__(self, device):
@@ -101,8 +171,8 @@ class EnvManager():
     def close(self):
         self.env.close()
 
-    def take_action(self, action):        
-        _, reward, self.done, _ = self.env.step(action.item())
+    def take_actions(self, actions):
+        _, reward, self.done, _ = self.env.step(actions)
         return torch.tensor([reward], device=self.device)
 
     def just_starting(self):
@@ -110,18 +180,22 @@ class EnvManager():
 
     def get_state(self):
         if self.just_starting() or self.done:
-            self.current_screen = self.get_processed_screen()
             black_screen = torch.zeros_like(self.current_screen)
             return black_screen
         else:
             s1 = self.current_screen
-            s2 = self.get_processed_screen()
+            s2 = refresh_screen()
             self.current_screen = s2
             return s2 - s1
 
+    def get_screen_height(self):
+        return 10
+    def get_screen_width(self):
+        return 10
+
 def plot(values, moving_avg_period):
     plt.figure(2)
-    plt.clf()        
+    plt.clf()
     plt.title('Training...')
     plt.xlabel('Episode')
     plt.ylabel('Duration')
@@ -150,7 +224,7 @@ def extract_tensors(experiences):
     t3 = torch.cat(batch.reward)
     t4 = torch.cat(batch.next_state)
 
-    return (t1,t2,t3,t4)            
+    return (t1,t2,t3,t4)
 
 batch_size = 256
 gamma = 0.999
@@ -165,7 +239,7 @@ num_episodes = 1000
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 em = EnvManager(device)
 strategy = EpsilonGreedyStrategy(eps_start, eps_end, eps_decay)
-agent = Agent(strategy, em.num_actions_available(), device)
+agent = Agent(strategy, device)
 memory = ReplayMemory(memory_size)
 policy_net = DQN(em.get_screen_height(), em.get_screen_width()).to(device)
 target_net = DQN(em.get_screen_height(), em.get_screen_width()).to(device)
@@ -180,7 +254,7 @@ for episode in range(num_episodes):
     em.reset()
     state = em.get_state()
     for timestep in count():
-        action = agent.select_action(state, policy_net)
+        action = agent.select_actions(state, policy_net)
         reward = em.take_action(action)
         next_state = em.get_state()
         memory.push(Experience(state, action, next_state, reward))
@@ -188,11 +262,11 @@ for episode in range(num_episodes):
         if memory.can_provide_sample(batch_size):
             experiences = memory.sample(batch_size)
             states, actions, rewards, next_states = extract_tensors(experiences)
-            
+
             current_q_values = QValues.get_current(policy_net, states, actions)
             next_q_values = QValues.get_next(target_net, next_states)
             target_q_values = (next_q_values * gamma) + rewards
-            
+
             loss = F.mse_loss(current_q_values, target_q_values.unsqueeze(1))
             optimizer.zero_grad()
             loss.backward()
@@ -203,5 +277,5 @@ for episode in range(num_episodes):
                 episode_durations.append(timestep)
                 plot(episode_durations, 100)
             break
-        
+
 em.close()
