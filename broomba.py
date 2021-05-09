@@ -31,12 +31,12 @@ class DQN(nn.Module):
         self.fc2 = nn.Linear(in_features=24, out_features=32)
         self.out = nn.Linear(in_features=32, out_features=8)
 
-def forward(self, t):
-    t = t.flatten(start_dim=1)
-    t = F.relu(self.fc1(t))
-    t = F.relu(self.fc2(t))
-    t = self.out(t)
-    return t
+    def forward(self, t):
+        t = t.flatten(start_dim=1)
+        t = F.relu(self.fc1(t))
+        t = F.relu(self.fc2(t))
+        t = self.out(t)
+        return t
 
 Experience = namedtuple(
     'Experience',
@@ -49,18 +49,18 @@ class ReplayMemory():
         self.memory = []
         self.push_count = 0
 
-        def push(self, experience):
-            if len(self.memory) < self.capacity:
-                self.memory.append(experience)
-            else:
-                self.memory[self.push_count % self.capacity] = experience
-                self.push_count += 1
+    def push(self, experience):
+        if len(self.memory) < self.capacity:
+            self.memory.append(experience)
+        else:
+            self.memory[self.push_count % self.capacity] = experience
+            self.push_count += 1
 
-        def sample(self, batch_size):
-            return random.sample(self.memory, batch_size)
-
-        def can_provide_sample(self, batch_size):
-            return len(self.memory) >= batch_size
+    def sample(self, batch_size):
+        return random.sample(self.memory, batch_size)
+    
+    def can_provide_sample(self, batch_size):
+        return len(self.memory) >= batch_size
 
 class EpsilonGreedyStrategy():
     def __init__(self, start, end, decay):
@@ -68,9 +68,9 @@ class EpsilonGreedyStrategy():
         self.end = end
         self.decay = decay
 
-        def get_exploration_rate(self, current_step):
-            return self.end + (self.start - self.end) * \
-                math.exp(-1. * current_step * self.decay)
+    def get_exploration_rate(self, current_step):
+        return self.end + (self.start - self.end) * \
+            math.exp(-1. * current_step * self.decay)
 
 class Agent():
     def __init__(self, strategy, device):
@@ -89,32 +89,68 @@ class Agent():
             return randActions # explore
         else:
             with torch.no_grad():
-                rawOuts = policy_net(state).numpy()
+                rawOuts = policy_net(state)
+                rawOuts = rawOuts.numpy().flatten()
                 outs = []
                 for elem in rawOuts:
                     outs.append(elem > 0.5)
                 return outs # exploit
 
-# This section is naturally almost entirely written by me. 
+# This section is naturally almost entirely written by me.
 class DustforceEnv():
     def __init__(self):
         cmd = "/home/caleb/DF/dustmod.linux.steam.nofocus.bin.x86_64"
         proc = Popen(["unbuffer", cmd], stdout=PIPE, stderr=PIPE, universal_newlines=True)
         threading.Thread(target=lambda:self.process_input(proc)).start()
-        out = subprocess.run(["unbuffer", "xdotool", "search", "dustforce"], capture_output=True)
+        time.sleep(2)
+        out = subprocess.run(["unbuffer", "xdotool",
+                              "search", "--name", "dustforce"],
+                             capture_output=True)
         print("Window ID is " + out.stdout.decode())
         self.winID = out.stdout.decode()
         self.lastActions = []
+        self.gameFrame = 0;
+        self.currentReward = 0;
         for i in range(8):
             self.lastActions.append(False)
         self.inputList = ["w","a","s","d","u","i","o","p"]
+        self.frame = np.zeros([self.get_height(), self.get_width()])
+        self.framePos = 0
+        self.navigate()
+        self.done = False;
+        print("Press return to begin...")
 
-    def process_input(self, proc):
-        while (line := proc.stdout.readline()) != b"":
-            print(line, end="")
+
+    def navigate(self):
+        time.sleep(0.3)
+        self.sendKeypress("Return")
+        time.sleep(0.3)
+        self.sendKeypress("w")
+        time.sleep(0.3)
+        self.sendKeypress("Return")
+        time.sleep(1)
+        self.sendKeypress("Tab")
         
+    def process_input(self, proc):
+        while (line := proc.stdout.readline().strip()) != b"":
+            if line[0:3] == ">~>":
+                self.framePos = 0
+            if len(line) != 0:
+                signalChar = line[0]
+                line = line[1:None]
+                if signalChar == "}":
+                    self.framePos += 1
+                    if(self.framePos < self.get_height()):
+                        for i in range(self.get_width()):
+                            self.frame[self.framePos][i] = int(line[i])
+                elif signalChar == ")":
+                    self.currentReward = int(line)
+                elif signalChar == "]":
+                    self.gameFrame = int(line)
+                elif signalChar == "`":
+                    self.done = True;
+
     def sendInput(self, cmd, key, delay=17):
-        print("sendInput " + cmd + " " + key)
         subprocess.run(["xdotool",
                         cmd,
                         "--window", self.winID,
@@ -122,7 +158,6 @@ class DustforceEnv():
                         key])
 
     def sendKeypress(self, key, delay=17):
-        print("sendKeypress " + key)
         subprocess.run(["xdotool",
                         "keydown",
                         "--window", self.winID,
@@ -131,14 +166,15 @@ class DustforceEnv():
                         "keyup",
                         "--window", self.winID,
                         "--delay", str(delay),
-                        "key"])
+                        key])
 
     def reset(self):
         for i in range(8):
             self.sendKeypress("r")
+        self.done = False
         # sent so many times because this is the one place dropping the input is intolerable
         # and also it doesn't really matter if it's sent too many times; the game interprets it fine
-        
+
     def close(self):
         self.sendInput("Escape")
         self.sendInput("w")
@@ -147,20 +183,26 @@ class DustforceEnv():
         self.sendInput("u")
 
     def step(self, actions):
-        for (action, lastAction, key) in zip(actions, lastActions, inputList):
+        for (action, lastAction, key) in zip(actions, self.lastActions, self.inputList):
             if action and not lastAction:
-                sendInput("keydown", key)
+                self.sendInput("keydown", key)
             if lastAction and not action:
-                sendInput("keyup", key)
-        # reward, etc.
-        return (0, 0, False, 0)
-    
+                self.sendInput("keyup", key)
+        time.sleep((16/60))
+        return (0, self.currentReward, self.done, 0)
+
+    def get_height(self):
+        return 20
+
+    def get_width(self):
+        return 30
 
 class EnvManager():
     def __init__(self, device):
         self.device = device
         self.env = DustforceEnv()
-        self.env.reset()
+        # not currently necessary
+        # self.env.reset()
         self.current_screen = None
         self.done = False
 
@@ -178,20 +220,27 @@ class EnvManager():
     def just_starting(self):
         return self.current_screen is None
 
+    def refresh_screen(self):
+        screen = self.env.frame
+        screen = np.ascontiguousarray(screen, dtype=np.float32) / 4
+        screen = torch.from_numpy(screen)
+        return screen.unsqueeze(0).unsqueeze(0).to(self.device)
+
     def get_state(self):
         if self.just_starting() or self.done:
+            self.current_screen = self.refresh_screen()
             black_screen = torch.zeros_like(self.current_screen)
             return black_screen
         else:
             s1 = self.current_screen
-            s2 = refresh_screen()
+            s2 = self.refresh_screen()
             self.current_screen = s2
             return s2 - s1
 
     def get_screen_height(self):
-        return 10
+        return self.env.get_height()
     def get_screen_width(self):
-        return 10
+        return self.env.get_width()
 
 def plot(values, moving_avg_period):
     plt.figure(2)
@@ -228,7 +277,7 @@ def extract_tensors(experiences):
 
 batch_size = 256
 gamma = 0.999
-eps_start = 1
+eps_start = 0.99
 eps_end = 0.01
 eps_decay = 0.001
 target_update = 10
@@ -250,12 +299,13 @@ optimizer = optim.Adam(params=policy_net.parameters(), lr=lr)
 
 episode_scores = []
 
+input()
 for episode in range(num_episodes):
     em.reset()
     state = em.get_state()
     for timestep in count():
         action = agent.select_actions(state, policy_net)
-        reward = em.take_action(action)
+        reward = em.take_actions(action)
         next_state = em.get_state()
         memory.push(Experience(state, action, next_state, reward))
         state = next_state
@@ -274,8 +324,8 @@ for episode in range(num_episodes):
         if em.done:
             if episode % target_update == 0:
                 target_net.load_state_dict(policy_net.state_dict())
-                episode_durations.append(timestep)
-                plot(episode_durations, 100)
+                episode_scores.append(timestep)
+                #plot(episode_scores, 100)
             break
 
 em.close()
