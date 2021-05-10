@@ -1,4 +1,4 @@
-# The source for most of this code is here:
+# The source for most of this code is from this series of lessons:
 # https://deeplizard.com/learn/video/PyQNfsGUnQA
 # Their code is itself a modification of pytorch's tutorial code for deep Q networks.
 
@@ -27,15 +27,35 @@ class DQN(nn.Module):
     def __init__(self, img_height, img_width):
         super().__init__()
 
-        self.fc1 = nn.Linear(in_features=img_height*img_width, out_features=24)   
-        self.fc2 = nn.Linear(in_features=24, out_features=32)
-        self.out = nn.Linear(in_features=32, out_features=8)
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=6, kernel_size=5)
+        self.conv2 = nn.Conv2d(in_channels=6, out_channels=18, kernel_size=5)
+        
+        self.fc1 = nn.Linear(in_features=18*5*3, out_features=200)
+        self.fc2 = nn.Linear(in_features=200, out_features=100)
+        self.fc3 = nn.Linear(in_features=100, out_features=40)        
+        self.out = nn.Linear(in_features=40, out_features=8)
 
     def forward(self, t):
-        t = t.flatten(start_dim=1)
-        t = F.relu(self.fc1(t))
-        t = F.relu(self.fc2(t))
+        t = self.conv1(t)
+        t = F.relu(t)
+        t = F.max_pool2d(t, kernel_size=2, stride=2)        
+        
+        t = self.conv2(t)
+        t = F.relu(t)
+        t = F.max_pool2d(t, kernel_size=2, stride=2)
+        
+        t = t.reshape(-1, 18*5*3)
+        t = self.fc1(t)
+        t = F.relu(t)
+
+        t = self.fc2(t)
+        t = F.relu(t)
+
+        t = self.fc3(t)
+        t = F.relu(t)        
+
         t = self.out(t)
+        
         return t
 
 Experience = namedtuple(
@@ -109,46 +129,48 @@ class DustforceEnv():
         print("Window ID is " + out.stdout.decode())
         self.winID = out.stdout.decode()
         self.lastActions = []
-        self.gameFrame = 0;
-        self.currentReward = 0;
+        self.gameFrame = 0
+        self.currentReward = 0
         for i in range(8):
             self.lastActions.append(False)
         self.inputList = ["w","a","s","d","u","i","o","p"]
         self.frame = np.zeros([self.get_height(), self.get_width()])
         self.framePos = 0
         self.navigate()
-        self.done = False;
-        print("Press return to begin...")
+        self.done = False
 
 
     def navigate(self):
         time.sleep(0.3)
         self.sendKeypress("Return")
-        time.sleep(0.3)
-        self.sendKeypress("w")
-        time.sleep(0.3)
-        self.sendKeypress("Return")
-        time.sleep(1)
-        self.sendKeypress("Tab")
+        #time.sleep(0.3)
+        #self.sendKeypress("w")
+        #time.sleep(0.3)
+        #self.sendKeypress("Return")
+        #time.sleep(1)
+        #self.sendKeypress("Tab")
         
     def process_input(self, proc):
         while (line := proc.stdout.readline().strip()) != b"":
-            if line[0:3] == ">~>":
-                self.framePos = 0
             if len(line) != 0:
                 signalChar = line[0]
                 line = line[1:None]
                 if signalChar == "}":
                     self.framePos += 1
-                    if(self.framePos < self.get_height()):
+                    if self.framePos < self.get_height():
                         for i in range(self.get_width()):
                             self.frame[self.framePos][i] = int(line[i])
+                elif signalChar == ">":
+                    if line[0:2] == "~>":
+                        self.framePos = 0
                 elif signalChar == ")":
                     self.currentReward = int(line)
                 elif signalChar == "]":
                     self.gameFrame = int(line)
                 elif signalChar == "`":
-                    self.done = True;
+                    self.done = True
+                else:
+                    print(signalChar + line)
 
     def sendInput(self, cmd, key, delay=17):
         subprocess.run(["xdotool",
@@ -171,9 +193,11 @@ class DustforceEnv():
     def reset(self):
         for i in range(8):
             self.sendKeypress("r")
-        self.done = False
         # sent so many times because this is the one place dropping the input is intolerable
         # and also it doesn't really matter if it's sent too many times; the game interprets it fine
+        self.done = False
+        for i in range(8):
+            self.lastActions.append(False)        
 
     def close(self):
         self.sendInput("Escape")
@@ -188,14 +212,15 @@ class DustforceEnv():
                 self.sendInput("keydown", key)
             if lastAction and not action:
                 self.sendInput("keyup", key)
-        time.sleep((16/60))
+        time.sleep((20/60))
+        self.lastActions = actions
         return (0, self.currentReward, self.done, 0)
 
     def get_height(self):
-        return 20
+        return 24
 
     def get_width(self):
-        return 30
+        return 32
 
 class EnvManager():
     def __init__(self, device):
@@ -232,10 +257,8 @@ class EnvManager():
             black_screen = torch.zeros_like(self.current_screen)
             return black_screen
         else:
-            s1 = self.current_screen
-            s2 = self.refresh_screen()
-            self.current_screen = s2
-            return s2 - s1
+            self.current_screen = self.refresh_screen()
+            return self.current_screen
 
     def get_screen_height(self):
         return self.env.get_height()
@@ -275,13 +298,41 @@ def extract_tensors(experiences):
 
     return (t1,t2,t3,t4)
 
+def tensorize(actions):
+    tensorActs = []
+    for action in actions:
+        if action:
+            tensorActs.append(1)
+        else:
+            tensorActs.append(0)
+    tensorActs = torch.tensor(tensorActs)
+    return tensorActs
+
+class QValues():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    @staticmethod
+    def get_current(policy_net, states, actions):
+        return policy_net(states)
+
+    @staticmethod        
+    def get_next(target_net, next_states):
+        #final_state_locations = next_states.flatten(start_dim=1) \
+        #                            .max(dim=1)[0].eq(0).type(torch.bool)
+        #non_final_state_locations = (final_state_locations == False)
+        #non_final_states = next_states[non_final_state_locations]
+        #batch_size = next_states.shape[0]
+        #values = torch.zeros(batch_size, 8).to(QValues.device)
+        #values[non_final_state_locations] = target_net(non_final_states).detach()
+        return target_net(next_states).detach()
+    
 batch_size = 256
 gamma = 0.999
 eps_start = 0.99
-eps_end = 0.01
-eps_decay = 0.001
-target_update = 10
-memory_size = 100000
+eps_end = 0.1
+eps_decay = 0.0001
+target_update = 3
+memory_size = 10000
 lr = 0.001
 num_episodes = 1000
 
@@ -299,15 +350,25 @@ optimizer = optim.Adam(params=policy_net.parameters(), lr=lr)
 
 episode_scores = []
 
-input()
+time.sleep(3)
+input("Once you're set up, press return to begin.\n")
+
+k = 0
 for episode in range(num_episodes):
+    k += 1
     em.reset()
     state = em.get_state()
+    print("Starting episode ", end="")
+    print(k)
+    print("Exploration rate: ", end="")
+    print(agent.strategy.get_exploration_rate(agent.current_step))
+    totalReward = 0    
     for timestep in count():
         action = agent.select_actions(state, policy_net)
         reward = em.take_actions(action)
+        totalReward += reward.item()
         next_state = em.get_state()
-        memory.push(Experience(state, action, next_state, reward))
+        memory.push(Experience(state, tensorize(action), next_state, reward))
         state = next_state
         if memory.can_provide_sample(batch_size):
             experiences = memory.sample(batch_size)
@@ -315,17 +376,19 @@ for episode in range(num_episodes):
 
             current_q_values = QValues.get_current(policy_net, states, actions)
             next_q_values = QValues.get_next(target_net, next_states)
-            target_q_values = (next_q_values * gamma) + rewards
+            next_q_values = next_q_values.reshape(256, 8)
+            target_q_values = (next_q_values * gamma) + rewards.unsqueeze(1)
+            target_q_values = target_q_values.reshape(batch_size, -1)            
 
-            loss = F.mse_loss(current_q_values, target_q_values.unsqueeze(1))
+            loss = F.mse_loss(current_q_values, target_q_values)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
         if em.done:
+            episode_scores.append(totalReward)
             if episode % target_update == 0:
                 target_net.load_state_dict(policy_net.state_dict())
-                episode_scores.append(timestep)
-                #plot(episode_scores, 100)
+                plot(episode_scores, 100)
             break
 
 em.close()
