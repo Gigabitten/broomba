@@ -12,8 +12,8 @@ Special thanks to Skyhawk for talking with me for literally hours, helping me wo
 dustmod - I mean, obviously.  
 xdotool - be my guest if you'd like to port the input mechanisms to launch autohotkey scripts or something, but xdotool is quite effective for sending keystrokes directly to windows. 
 Note that Dustmod doesn't actually allow you to send inputs to it while unfocused. 
-Well, it does, but they're buffered until it's focused again. This can be fixed; if you want to know how, ask msg. 
-pytorch - and also, of course, python if you don't have it
+Well, it does, but they're buffered until it's focused again. This can be fixed; if you want to know how, ask msg.  
+pytorch - and also, of course, python if you don't have it.  
 unbuffer - necessary for working with python in this sort of context; clib buffers by default and
 terminals override this behavior. unbuffer fixes that for a given output stream.  
 I think that's everything, but if you're trying to get it working and I missed something, let me know please!  
