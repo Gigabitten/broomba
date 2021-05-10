@@ -7,6 +7,8 @@ const int HEIGHT = 24;
 const bool SHOWPLAYER = false;
 const int TIMEOUT_FRAMES = 300;
 const bool DEBUG = false;
+const int IDLE_PUNISHMENT = 20;
+const int IDLE_PUNISHMENT_INTERVAL = 30;
 
 class script {
   camera@ cam;
@@ -20,7 +22,6 @@ class script {
   uint64 frame;
   uint32 since_last_reward;
   int total_reward;
-
 
   void init_arrays() {
     for(int i = 0; i < 4; i++) {
@@ -84,6 +85,9 @@ class script {
                       (enemy_hp[last_place] - enemy_hp[place]) * 40);
     if(cur_reward == 0) {
       since_last_reward++;
+      if(since_last_reward % IDLE_PUNISHMENT_INTERVAL == 0) {
+        cur_reward -= IDLE_PUNISHMENT;
+      }
     } else {
       since_last_reward = 0;
     }

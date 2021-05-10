@@ -29,7 +29,7 @@ class DQN(nn.Module):
 
         self.conv1 = nn.Conv2d(in_channels=1, out_channels=6, kernel_size=5)
         self.conv2 = nn.Conv2d(in_channels=6, out_channels=18, kernel_size=5)
-        
+
         self.fc1 = nn.Linear(in_features=18*5*3, out_features=200)
         self.fc2 = nn.Linear(in_features=200, out_features=100)
         self.fc3 = nn.Linear(in_features=100, out_features=40)        
@@ -212,7 +212,7 @@ class DustforceEnv():
                 self.sendInput("keydown", key)
             if lastAction and not action:
                 self.sendInput("keyup", key)
-        time.sleep((20/60))
+        time.sleep(wait_time)
         self.lastActions = actions
         return (0, self.currentReward, self.done, 0)
 
@@ -326,14 +326,26 @@ class QValues():
         #values[non_final_state_locations] = target_net(non_final_states).detach()
         return target_net(next_states).detach()
     
+unfinished_memories = {}
+def update_experiences(timestep, state, action, next_state, reward):
+    unfinished_memories[timestep] = (state, action, next_state, reward)
+    if timestep - reward_delay in unfinished_memories:
+        (rem_state, rem_action, rem_next_state, old_reward) = unfinished_memories[timestep - reward_delay]
+        accumulated_reward = torch.tensor([reward.item() - old_reward.item()], device=device)
+        memory.push(Experience(rem_state, rem_action, rem_next_state, accumulated_reward))
+
+# time waited between steps; too low might break xdotool a bit
+wait_time = 4 / 60
+# how many *timesteps* to wait before issuing reward
+reward_delay = 8
 batch_size = 256
 gamma = 0.999
 eps_start = 0.99
 eps_end = 0.1
-eps_decay = 0.0001
-target_update = 3
-memory_size = 10000
-lr = 0.001
+eps_decay = 0.001
+target_update = 6
+memory_size = 1000
+lr = 0.01
 num_episodes = 1000
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -362,13 +374,12 @@ for episode in range(num_episodes):
     print(k)
     print("Exploration rate: ", end="")
     print(agent.strategy.get_exploration_rate(agent.current_step))
-    totalReward = 0    
     for timestep in count():
         action = agent.select_actions(state, policy_net)
         reward = em.take_actions(action)
-        totalReward += reward.item()
         next_state = em.get_state()
-        memory.push(Experience(state, tensorize(action), next_state, reward))
+        action = tensorize(action)
+        update_experiences(timestep, state, action, next_state, reward)
         state = next_state
         if memory.can_provide_sample(batch_size):
             experiences = memory.sample(batch_size)
@@ -378,17 +389,18 @@ for episode in range(num_episodes):
             next_q_values = QValues.get_next(target_net, next_states)
             next_q_values = next_q_values.reshape(256, 8)
             target_q_values = (next_q_values * gamma) + rewards.unsqueeze(1)
-            target_q_values = target_q_values.reshape(batch_size, -1)            
+            target_q_values = target_q_values.reshape(batch_size, -1)
 
             loss = F.mse_loss(current_q_values, target_q_values)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
         if em.done:
-            episode_scores.append(totalReward)
+            print("Reward was: " + str(em.env.currentReward))
+            episode_scores.append(em.env.currentReward)
+            plot(episode_scores, 100)            
             if episode % target_update == 0:
                 target_net.load_state_dict(policy_net.state_dict())
-                plot(episode_scores, 100)
             break
 
 em.close()
