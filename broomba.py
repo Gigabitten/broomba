@@ -1,4 +1,4 @@
-# The source for most of this code is from this series of lessons:
+# The source for much of this code is from this series of lessons:
 # https://deeplizard.com/learn/video/PyQNfsGUnQA
 # Their code is itself a modification of pytorch's tutorial code for deep Q networks.
 
@@ -36,27 +36,37 @@ class DQN(nn.Module):
         self.out = nn.Linear(in_features=40, out_features=8)
 
     def forward(self, t):
+        weight = torch.tensor([1], dtype=torch.float)
+        
         t = self.conv1(t)
-        t = F.relu(t)
+        t = F.prelu(t, weight)
         t = F.max_pool2d(t, kernel_size=2, stride=2)        
         
         t = self.conv2(t)
-        t = F.relu(t)
+        t = F.prelu(t, weight)
         t = F.max_pool2d(t, kernel_size=2, stride=2)
         
         t = t.reshape(-1, 18*5*3)
         t = self.fc1(t)
-        t = F.relu(t)
+        t = F.prelu(t, weight)
 
         t = self.fc2(t)
-        t = F.relu(t)
+        t = F.prelu(t, weight)
 
         t = self.fc3(t)
-        t = F.relu(t)        
+        t = F.prelu(t, weight)        
 
         t = self.out(t)
         
         return t
+
+class DumbDQN(nn.Module):
+    def __init__(self, img_height, img_width):
+        super().__init__()
+        self.fc1 = nn.Linear(in_features = img_width * img_height, out_features = 2)
+
+    def forward(self, t):
+        return F.prelu(self.fc1(t.flatten()), torch.tensor([1], dtype=torch.float))        
 
 Experience = namedtuple(
     'Experience',
@@ -98,25 +108,18 @@ class Agent():
         self.strategy = strategy
         self.device = device
 
-    def select_actions(self, state, policy_net):
+    def select_action(self, state, policy_net):
         rate = self.strategy.get_exploration_rate(self.current_step)
         self.current_step += 1
-
         if rate > random.random():
-            randActions = []
-            for i in range(8):
-                randActions.append(random.random() > 0.5)
-            return randActions # explore
+            return torch.tensor([random.randrange(8)]).to(self.device) # explore
         else:
             with torch.no_grad():
-                rawOuts = policy_net(state)
-                rawOuts = rawOuts.numpy().flatten()
-                outs = []
-                for elem in rawOuts:
-                    outs.append(elem > 0.5)
-                return outs # exploit
+                outs = policy_net(state)
+                return outs.argmax(dim=1).to(self.device) # exploit
 
 # This section is naturally almost entirely written by me.
+# Note from later in the project: at this point, *most* sections are heavily modified.
 class DustforceEnv():
     def __init__(self):
         cmd = "/home/caleb/DF/dustmod.linux.steam.nofocus.bin.x86_64"
@@ -128,27 +131,23 @@ class DustforceEnv():
                              capture_output=True)
         print("Window ID is " + out.stdout.decode())
         self.winID = out.stdout.decode()
-        self.lastActions = []
         self.gameFrame = 0
         self.currentReward = 0
-        for i in range(8):
-            self.lastActions.append(False)
-        self.inputList = ["w","a","s","d","u","i","o","p"]
+        self.inputList = ["a","d","w","s","u","i","o","p"]
         self.frame = np.zeros([self.get_height(), self.get_width()])
         self.framePos = 0
         self.navigate()
         self.done = False
 
-
     def navigate(self):
         time.sleep(0.3)
         self.sendKeypress("Return")
-        #time.sleep(0.3)
-        #self.sendKeypress("w")
-        #time.sleep(0.3)
-        #self.sendKeypress("Return")
-        #time.sleep(1)
-        #self.sendKeypress("Tab")
+        time.sleep(0.3)
+        self.sendKeypress("w")
+        time.sleep(0.3)
+        self.sendKeypress("Return")
+        time.sleep(1)
+        self.sendKeypress("Tab")
         
     def process_input(self, proc):
         while (line := proc.stdout.readline().strip()) != b"":
@@ -196,24 +195,19 @@ class DustforceEnv():
         # sent so many times because this is the one place dropping the input is intolerable
         # and also it doesn't really matter if it's sent too many times; the game interprets it fine
         self.done = False
-        for i in range(8):
-            self.lastActions.append(False)        
 
     def close(self):
-        self.sendInput("Escape")
-        self.sendInput("w")
-        self.sendInput("Return")
-        self.sendInput("a")
-        self.sendInput("u")
+        self.sendKeypress("Escape")
+        self.sendKeypress("w")
+        self.sendKeypress("Return")
+        self.sendKeypress("a")
+        self.sendKeypress("u")
 
-    def step(self, actions):
-        for (action, lastAction, key) in zip(actions, self.lastActions, self.inputList):
-            if action and not lastAction:
-                self.sendInput("keydown", key)
-            if lastAction and not action:
-                self.sendInput("keyup", key)
+    def step(self, action):
+        self.sendInput("keydown", self.inputList[action])
         time.sleep(wait_time)
-        self.lastActions = actions
+        self.sendInput("keyup", self.inputList[action])        
+        # Don't worry - the reward in an interval of time gets figured out later.
         return (0, self.currentReward, self.done, 0)
 
     def get_height(self):
@@ -238,8 +232,8 @@ class EnvManager():
     def close(self):
         self.env.close()
 
-    def take_actions(self, actions):
-        _, reward, self.done, _ = self.env.step(actions)
+    def take_action(self, action):
+        _, reward, self.done, _ = self.env.step(action)
         return torch.tensor([reward], device=self.device)
 
     def just_starting(self):
@@ -313,40 +307,29 @@ class QValues():
     
     @staticmethod
     def get_current(policy_net, states, actions):
-        return policy_net(states)
-
+        return policy_net(states).gather(dim=1, index=actions.unsqueeze(-1))
+    
     @staticmethod        
     def get_next(target_net, next_states):
-        #final_state_locations = next_states.flatten(start_dim=1) \
-        #                            .max(dim=1)[0].eq(0).type(torch.bool)
-        #non_final_state_locations = (final_state_locations == False)
-        #non_final_states = next_states[non_final_state_locations]
-        #batch_size = next_states.shape[0]
-        #values = torch.zeros(batch_size, 8).to(QValues.device)
-        #values[non_final_state_locations] = target_net(non_final_states).detach()
-        return target_net(next_states).detach()
-    
-unfinished_memories = {}
-def update_experiences(timestep, state, action, next_state, reward):
-    unfinished_memories[timestep] = (state, action, next_state, reward)
-    if timestep - reward_delay in unfinished_memories:
-        (rem_state, rem_action, rem_next_state, old_reward) = unfinished_memories[timestep - reward_delay]
-        accumulated_reward = torch.tensor([reward.item() - old_reward.item()], device=device)
-        memory.push(Experience(rem_state, rem_action, rem_next_state, accumulated_reward))
+        final_state_locations = next_states.flatten(start_dim=1) \
+                                   .max(dim=1)[0].eq(0).type(torch.bool)
+        non_final_state_locations = (final_state_locations == False)
+        non_final_states = next_states[non_final_state_locations]
+        batch_size = next_states.shape[0]
+        values = torch.zeros(batch_size).to(QValues.device)
+        values[non_final_state_locations] = target_net(non_final_states).max(dim=1)[0].detach()
+        return values
 
-# time waited between steps; too low might break xdotool a bit
-wait_time = 4 / 60
-# how many *timesteps* to wait before issuing reward
-reward_delay = 8
+wait_time = 0.15
 batch_size = 256
 gamma = 0.999
 eps_start = 0.99
 eps_end = 0.1
-eps_decay = 0.001
-target_update = 6
-memory_size = 1000
+eps_decay = 0.0001
+target_update = 10
+memory_size = 10000
 lr = 0.01
-num_episodes = 1000
+num_episodes = 10000
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 em = EnvManager(device)
@@ -363,9 +346,10 @@ optimizer = optim.Adam(params=policy_net.parameters(), lr=lr)
 episode_scores = []
 
 time.sleep(3)
-input("Once you're set up, press return to begin.\n")
+input()
 
 k = 0
+prev_reward = 0
 for episode in range(num_episodes):
     k += 1
     em.reset()
@@ -375,23 +359,22 @@ for episode in range(num_episodes):
     print("Exploration rate: ", end="")
     print(agent.strategy.get_exploration_rate(agent.current_step))
     for timestep in count():
-        action = agent.select_actions(state, policy_net)
-        reward = em.take_actions(action)
+        action = agent.select_action(state, policy_net)
+        reward = em.take_action(action)
         next_state = em.get_state()
         action = tensorize(action)
-        update_experiences(timestep, state, action, next_state, reward)
+        memory.push(Experience(state, action, next_state, reward - prev_reward));
         state = next_state
+        prev_reward = reward
         if memory.can_provide_sample(batch_size):
             experiences = memory.sample(batch_size)
             states, actions, rewards, next_states = extract_tensors(experiences)
 
             current_q_values = QValues.get_current(policy_net, states, actions)
             next_q_values = QValues.get_next(target_net, next_states)
-            next_q_values = next_q_values.reshape(256, 8)
-            target_q_values = (next_q_values * gamma) + rewards.unsqueeze(1)
-            target_q_values = target_q_values.reshape(batch_size, -1)
+            target_q_values = (next_q_values * gamma) + rewards
 
-            loss = F.mse_loss(current_q_values, target_q_values)
+            loss = F.mse_loss(current_q_values, target_q_values.unsqueeze(1))
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
