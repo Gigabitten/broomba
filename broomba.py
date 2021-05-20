@@ -63,10 +63,20 @@ class DQN(nn.Module):
 class DumbDQN(nn.Module):
     def __init__(self, img_height, img_width):
         super().__init__()
-        self.fc1 = nn.Linear(in_features = img_width * img_height, out_features = 2)
+        self.conv1 = nn.Conv2d(in_channels=4, out_channels=6, kernel_size=5)
+        self.fc1 = nn.Linear(in_features = 6 * img_height * img_width, out_features = 8)
 
     def forward(self, t):
-        return F.prelu(self.fc1(t.flatten()), torch.tensor([1], dtype=torch.float))        
+        weight = torch.tensor([1], dtype=torch.float)
+        
+        t = self.conv1(t)
+        t = F.prelu(t, weight)
+        t = F.max_pool2d(t, kernel_size=2, stride=2)
+
+        t = t.reshape(-1, 6*10*14)
+        t = self.fc1(t)
+        
+        return t
 
 Experience = namedtuple(
     'Experience',
@@ -353,7 +363,7 @@ batch_size = 256
 gamma = 0.99
 eps_start = 0.99
 eps_end = 0.1
-eps_decay = 0.0001
+decay = 0.0001
 target_update = 10
 memory_size = 10000
 lr = 0.001

@@ -5,7 +5,7 @@
 const int WIDTH = 32;
 const int HEIGHT = 24;
 const bool SHOWPLAYER = false;
-const int TIMEOUT_FRAMES = 300;
+const int TIMEOUT_FRAMES = 600;
 const bool DEBUG = false;
 const float IDLE_PUNISHMENT_FACTOR = 0.01;
 const int IDLE_PUNISHMENT_INTERVAL = 30;
