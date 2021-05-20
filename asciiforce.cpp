@@ -67,7 +67,7 @@ class script {
   }
 
   void on_level_end() {
-    total_reward += 100;
+    total_reward += 3000;
   }
 
   int abs(int x) {

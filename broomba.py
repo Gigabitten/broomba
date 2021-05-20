@@ -27,7 +27,7 @@ class DQN(nn.Module):
     def __init__(self, img_height, img_width):
         super().__init__()
 
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=6, kernel_size=5)
+        self.conv1 = nn.Conv2d(in_channels=4, out_channels=6, kernel_size=5)
         self.conv2 = nn.Conv2d(in_channels=6, out_channels=18, kernel_size=5)
 
         self.fc1 = nn.Linear(in_features=18*5*3, out_features=200)
@@ -134,7 +134,7 @@ class DustforceEnv():
         self.gameFrame = 0
         self.currentReward = 0
         self.inputList = ["a","d","w","s","u","i","o","p"]
-        self.frame = np.zeros([self.get_height(), self.get_width()])
+        self.frame = np.zeros([4, self.get_height(), self.get_width()])
         self.framePos = 0
         self.navigate()
         self.done = False
@@ -142,12 +142,12 @@ class DustforceEnv():
     def navigate(self):
         time.sleep(0.3)
         self.sendKeypress("Return")
-        time.sleep(0.3)
-        self.sendKeypress("w")
-        time.sleep(0.3)
-        self.sendKeypress("Return")
-        time.sleep(1)
-        self.sendKeypress("Tab")
+        # time.sleep(0.3)
+        # self.sendKeypress("w")
+        # time.sleep(0.3)
+        # self.sendKeypress("Return")
+        # time.sleep(1)
+        # self.sendKeypress("Tab")
         
     def process_input(self, proc):
         while (line := proc.stdout.readline().strip()) != b"":
@@ -158,7 +158,35 @@ class DustforceEnv():
                     self.framePos += 1
                     if self.framePos < self.get_height():
                         for i in range(self.get_width()):
-                            self.frame[self.framePos][i] = int(line[i])
+                            tile_type = int(line[i])
+                            # gotta basically do manual one-hot encoding
+                            # thanks a ton to Alexspeedy for, well, telling me about one-hot encoding
+                            # and also for this code since they screwed with this once I showed them
+                            if tile_type == 0:
+                                self.frame[0][self.framePos][i] = 0
+                                self.frame[1][self.framePos][i] = 0
+                                self.frame[2][self.framePos][i] = 0
+                                self.frame[3][self.framePos][i] = 0
+                            elif tile_type == 1:
+                                self.frame[0][self.framePos][i] = 1
+                                self.frame[1][self.framePos][i] = 0
+                                self.frame[2][self.framePos][i] = 0
+                                self.frame[3][self.framePos][i] = 0
+                            elif tile_type == 2:
+                                self.frame[0][self.framePos][i] = 0
+                                self.frame[1][self.framePos][i] = 1
+                                self.frame[2][self.framePos][i] = 0
+                                self.frame[3][self.framePos][i] = 0
+                            elif tile_type == 3:
+                                self.frame[0][self.framePos][i] = 0
+                                self.frame[1][self.framePos][i] = 0
+                                self.frame[2][self.framePos][i] = 1
+                                self.frame[3][self.framePos][i] = 0
+                            elif tile_type == 4:
+                                self.frame[0][self.framePos][i] = 0
+                                self.frame[1][self.framePos][i] = 0
+                                self.frame[2][self.framePos][i] = 0
+                                self.frame[3][self.framePos][i] = 1
                 elif signalChar == ">":
                     if line[0:2] == "~>":
                         self.framePos = 0
@@ -243,7 +271,7 @@ class EnvManager():
         screen = self.env.frame
         screen = np.ascontiguousarray(screen, dtype=np.float32) / 4
         screen = torch.from_numpy(screen)
-        return screen.unsqueeze(0).unsqueeze(0).to(self.device)
+        return screen.unsqueeze(0).to(self.device)
 
     def get_state(self):
         if self.just_starting() or self.done:
@@ -322,13 +350,13 @@ class QValues():
 
 wait_time = 0.15
 batch_size = 256
-gamma = 0.999
+gamma = 0.99
 eps_start = 0.99
 eps_end = 0.1
 eps_decay = 0.0001
 target_update = 10
 memory_size = 10000
-lr = 0.01
+lr = 0.001
 num_episodes = 10000
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -385,5 +413,4 @@ for episode in range(num_episodes):
             if episode % target_update == 0:
                 target_net.load_state_dict(policy_net.state_dict())
             break
-
 em.close()
